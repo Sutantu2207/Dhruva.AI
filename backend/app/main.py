@@ -8,6 +8,7 @@ from app.core.logging import logger
 from app.core.redis import redis_manager
 from app.core.worker import job_worker
 from app.core.scheduler import scheduler
+from app.core.job_handlers import register_all_job_handlers
 from app.api.v1.router import api_router
 from app import __version__
 
@@ -25,7 +26,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # 2. Initialize distributed caching / coordination
     await redis_manager.initialize()
 
-    # 3. Start background job worker and scheduler
+    # 3. Register background handlers and start worker and scheduler
+    register_all_job_handlers(job_worker)
     job_worker.start()
     scheduler.start()
 

@@ -219,7 +219,7 @@ class HttpSandboxProvider(CodeExecutionProvider):
             return {
                 "status": "degraded",
                 "configured": False,
-                "message": "SANDBOX_API_URL not configured; coding execution marked offline",
+                "message": "SANDBOX_API_URL not configured; coding execution marked offline (REQUIRES_SANDBOX)",
             }
         headers = {}
         if self.api_token:

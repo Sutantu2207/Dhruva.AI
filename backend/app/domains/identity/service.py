@@ -5,9 +5,9 @@ are implemented deterministically here.
 """
 
 from datetime import datetime, timezone, timedelta
-from typing import Tuple, Optional, List
+from typing import Tuple, Optional, List, Dict
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select, delete, or_, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.security import (
@@ -559,5 +559,84 @@ class IdentityService:
 
         await db.commit()
 
+    async def cleanup_expired_sessions(
+        self,
+        db: AsyncSession,
+        institution_id: Optional[str] = None,
+    ) -> Dict[str, int]:
+        """Prunes expired authentication sessions, password resets, and verification tokens.
+        
+        Deterministic, idempotent, and tenant-aware.
+        """
+        now = datetime.now(timezone.utc)
+        revoked_cutoff = now - timedelta(days=1)
+
+        # 1. UserSession cleanup
+        if institution_id:
+            user_subq = select(User.id).where(User.institution_id == institution_id)
+            session_filter = and_(
+                UserSession.user_id.in_(user_subq),
+                or_(
+                    UserSession.expires_at <= now,
+                    and_(UserSession.revoked_at.is_not(None), UserSession.revoked_at <= revoked_cutoff),
+                ),
+            )
+        else:
+            session_filter = or_(
+                UserSession.expires_at <= now,
+                and_(UserSession.revoked_at.is_not(None), UserSession.revoked_at <= revoked_cutoff),
+            )
+
+        stmt_sessions = delete(UserSession).where(session_filter)
+        res_sessions = await db.execute(stmt_sessions)
+        cleaned_sessions = res_sessions.rowcount or 0
+
+        # 2. PasswordResetToken cleanup
+        if institution_id:
+            user_subq = select(User.id).where(User.institution_id == institution_id)
+            reset_filter = and_(
+                PasswordResetToken.user_id.in_(user_subq),
+                or_(
+                    PasswordResetToken.expires_at <= now,
+                    PasswordResetToken.used_at.is_not(None),
+                ),
+            )
+        else:
+            reset_filter = or_(
+                PasswordResetToken.expires_at <= now,
+                PasswordResetToken.used_at.is_not(None),
+            )
+        stmt_resets = delete(PasswordResetToken).where(reset_filter)
+        res_resets = await db.execute(stmt_resets)
+        cleaned_resets = res_resets.rowcount or 0
+
+        # 3. EmailVerificationToken cleanup
+        if institution_id:
+            user_subq = select(User.id).where(User.institution_id == institution_id)
+            verif_filter = and_(
+                EmailVerificationToken.user_id.in_(user_subq),
+                or_(
+                    EmailVerificationToken.expires_at <= now,
+                    EmailVerificationToken.used_at.is_not(None),
+                ),
+            )
+        else:
+            verif_filter = or_(
+                EmailVerificationToken.expires_at <= now,
+                EmailVerificationToken.used_at.is_not(None),
+            )
+        stmt_verifs = delete(EmailVerificationToken).where(verif_filter)
+        res_verifs = await db.execute(stmt_verifs)
+        cleaned_verifs = res_verifs.rowcount or 0
+
+        await db.commit()
+
+        return {
+            "cleaned_sessions": cleaned_sessions,
+            "cleaned_password_resets": cleaned_resets,
+            "cleaned_verification_tokens": cleaned_verifs,
+        }
+
 
 identity_service = IdentityService()
+

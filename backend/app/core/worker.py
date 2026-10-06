@@ -112,6 +112,13 @@ class BackgroundJobWorker:
             return
 
         if not self._is_running:
+            if not self._handlers:
+                try:
+                    from app.core.job_handlers import register_all_job_handlers
+                    register_all_job_handlers(self)
+                except Exception as reg_err:
+                    logger.warning(f"Failed to auto-register background job handlers: {reg_err}")
+
             self._is_running = True
             self._worker_task = asyncio.create_task(self._worker_loop())
 

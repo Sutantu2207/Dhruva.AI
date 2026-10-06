@@ -380,7 +380,7 @@ class InstitutionalIntelligenceService:
         cls,
         db: AsyncSession,
         department_id: str,
-        user: User,
+        user: Optional[User] = None,
     ) -> Dict[str, Any]:
         """Provides department-scoped intelligence for HOD and authorized administrators."""
         dept_res = await db.execute(select(Department).where(Department.id == department_id))
@@ -389,7 +389,7 @@ class InstitutionalIntelligenceService:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Department not found.")
 
         # RBAC Check: HOD must match department
-        if user.role == UserRole.HOD:
+        if user is not None and user.role == UserRole.HOD:
             teacher_prof = (
                 await db.execute(
                     select(TeacherAcademicProfile).where(TeacherAcademicProfile.user_id == user.id)
@@ -668,10 +668,10 @@ class InstitutionalIntelligenceService:
         cls,
         db: AsyncSession,
         institution_id: str,
-        user: User,
+        user: Optional[User] = None,
     ) -> List[AcademicInterventionSignal]:
         """Scans student population and persists newly detected deterministic signals."""
-        if user.role not in (UserRole.TEACHER, UserRole.HOD, UserRole.INSTITUTION_ADMIN, UserRole.SUPER_ADMIN):
+        if user is not None and user.role not in (UserRole.TEACHER, UserRole.HOD, UserRole.INSTITUTION_ADMIN, UserRole.SUPER_ADMIN):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Unauthorized to run intervention detection scan.",
@@ -789,6 +789,112 @@ class InstitutionalIntelligenceService:
 
         await db.commit()
         return created_signals
+
+    @classmethod
+    async def scan_all_institutions_for_signals(
+        cls,
+        db: AsyncSession,
+        institution_id: Optional[str] = None,
+    ) -> Dict[str, int]:
+        """Scans student population across active institutions and creates intervention alerts."""
+        inst_query = select(Institution)
+        if institution_id:
+            inst_query = inst_query.where(Institution.id == institution_id)
+        institutions = (await db.execute(inst_query)).scalars().all()
+
+        results: Dict[str, int] = {}
+        for inst in institutions:
+            try:
+                signals = await cls.scan_and_generate_signals(
+                    db=db,
+                    institution_id=inst.id,
+                    user=None,
+                )
+                results[inst.id] = len(signals)
+            except Exception:
+                await db.rollback()
+                continue
+
+        return results
+
+    @classmethod
+    async def generate_analytics_snapshots(
+        cls,
+        db: AsyncSession,
+        institution_id: Optional[str] = None,
+    ) -> List[InstitutionalAnalyticsSnapshot]:
+        """Generates point-in-time cached aggregate analytics snapshots for institutions and departments.
+        
+        Pure deterministic aggregation, safe to retry, and idempotent.
+        """
+        inst_query = select(Institution)
+        if institution_id:
+            inst_query = inst_query.where(Institution.id == institution_id)
+        institutions = (await db.execute(inst_query)).scalars().all()
+
+        created_snapshots: List[InstitutionalAnalyticsSnapshot] = []
+
+        for inst in institutions:
+            try:
+                # 1. Department snapshots
+                depts = (
+                    await db.execute(
+                        select(Department).where(Department.institution_id == inst.id)
+                    )
+                ).scalars().all()
+
+                dept_summaries: List[Dict[str, Any]] = []
+                for dept in depts:
+                    try:
+                        dept_metrics = await cls.get_department_analytics(
+                            db=db,
+                            department_id=dept.id,
+                            user=None,
+                        )
+                        snap = InstitutionalAnalyticsSnapshot(
+                            institution_id=inst.id,
+                            scope_type="department",
+                            scope_id=dept.id,
+                            metric_payload=dept_metrics,
+                            algorithm_version=DepartmentAnalyticsEngine.ALGORITHM_VERSION,
+                        )
+                        db.add(snap)
+                        created_snapshots.append(snap)
+                        dept_summaries.append(dept_metrics)
+                    except Exception:
+                        pass
+
+                # 2. Institution-level aggregate snapshot
+                inst_metrics = {
+                    "institution_id": inst.id,
+                    "institution_name": inst.name,
+                    "institution_code": inst.code,
+                    "total_departments": len(depts),
+                    "departments_analyzed": len(dept_summaries),
+                    "total_students": sum(d.get("total_students", 0) for d in dept_summaries),
+                    "total_faculty": sum(d.get("total_faculty", 0) for d in dept_summaries),
+                    "total_offerings": sum(d.get("total_offerings", 0) for d in dept_summaries),
+                    "active_intervention_signals_count": sum(
+                        d.get("active_intervention_signals_count", 0) for d in dept_summaries
+                    ),
+                    "calculated_at": datetime.now(timezone.utc).isoformat(),
+                }
+                inst_snap = InstitutionalAnalyticsSnapshot(
+                    institution_id=inst.id,
+                    scope_type="institution",
+                    scope_id=inst.id,
+                    metric_payload=inst_metrics,
+                    algorithm_version="v1.0.0-deterministic",
+                )
+                db.add(inst_snap)
+                created_snapshots.append(inst_snap)
+
+                await db.commit()
+            except Exception:
+                await db.rollback()
+                continue
+
+        return created_snapshots
 
     @classmethod
     async def acknowledge_signal(
