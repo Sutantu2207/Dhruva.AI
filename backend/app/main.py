@@ -81,6 +81,24 @@ def create_application() -> FastAPI:
             response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
         return response
 
+    # Mount root-level health probes for container & platform ingress (Railway, Kubernetes, Docker)
+    from app.api.v1.endpoints.health import router as health_router
+    app.include_router(health_router)
+
+    # Root API metadata endpoint
+    @app.get("/", tags=["Health & Operations"])
+    async def root_status():
+        """Root API metadata and operational status."""
+        return {
+            "name": settings.PROJECT_NAME,
+            "version": __version__,
+            "environment": settings.ENVIRONMENT,
+            "status": "healthy",
+            "health_live": "/health/live",
+            "health_ready": "/health/ready",
+            "api_prefix": settings.API_V1_PREFIX,
+        }
+
     # Mount API v1 router
     app.include_router(api_router, prefix=settings.API_V1_PREFIX)
 

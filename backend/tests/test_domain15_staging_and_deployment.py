@@ -122,15 +122,35 @@ def test_email_service_health_probe():
 
 @pytest.mark.asyncio
 async def test_api_health_live_and_ready_endpoints(async_client: AsyncClient):
-    """Verify /health/live and /health/ready endpoints return structured diagnostic payloads."""
-    # 1. Test Liveness Probe
+    """Verify both root-level (/health/*) and versioned (/api/v1/health/*) endpoints."""
+    # 1. Test Root-level Liveness Probe (used by Railway, Docker, and Kubernetes)
+    root_live = await async_client.get("/health/live")
+    assert root_live.status_code == 200
+    root_live_data = root_live.json()
+    assert root_live_data["status"] == "alive"
+    assert "timestamp" in root_live_data
+
+    # 2. Test Root-level Readiness Probe
+    root_ready = await async_client.get("/health/ready")
+    assert root_ready.status_code == 200
+    root_ready_data = root_ready.json()
+    assert root_ready_data["status"] in ("healthy", "degraded")
+    assert "database" in root_ready_data
+
+    # 3. Test Root Metadata Endpoint (GET /)
+    root_res = await async_client.get("/")
+    assert root_res.status_code == 200
+    root_data = root_res.json()
+    assert root_data["status"] == "healthy"
+    assert root_data["health_live"] == "/health/live"
+
+    # 4. Test Versioned API Liveness Probe (GET /api/v1/health/live)
     live_res = await async_client.get("/api/v1/health/live")
     assert live_res.status_code == 200
     live_data = live_res.json()
     assert live_data["status"] == "alive"
-    assert "timestamp" in live_data
 
-    # 2. Test Readiness Probe
+    # 5. Test Versioned API Readiness Probe (GET /api/v1/health/ready)
     ready_res = await async_client.get("/api/v1/health/ready")
     assert ready_res.status_code == 200
     ready_data = ready_res.json()
