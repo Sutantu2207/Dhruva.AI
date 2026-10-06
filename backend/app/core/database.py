@@ -135,9 +135,16 @@ async def check_database_health(session: AsyncSession = None) -> Dict[str, Any]:
 
             alembic_rev = None
             try:
-                alembic_rev = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar()
+                alembic_res = await conn.execute(text("SELECT version_num FROM alembic_version"))
+                alembic_rev = alembic_res.scalar()
             except Exception:
                 pass
+
+            # Inspect all tables in public schema
+            tables_res = await conn.execute(text(
+                "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name"
+            ))
+            all_tables = [r[0] for r in tables_res.fetchall()]
 
             raw_host = async_engine.url.host or "unknown"
             port = async_engine.url.port or 5432
@@ -159,6 +166,8 @@ async def check_database_health(session: AsyncSession = None) -> Dict[str, Any]:
             "to_regclass_institutions_public": has_inst_public,
             "to_regclass_user_sessions_public": has_sess_public,
             "alembic_version": alembic_rev,
+            "public_tables_count": len(all_tables),
+            "public_tables_sample": all_tables[:10],
             "sanitized_server": sanitized_server,
         }
     except Exception as exc:
