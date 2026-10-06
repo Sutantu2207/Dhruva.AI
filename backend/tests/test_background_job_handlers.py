@@ -319,3 +319,45 @@ async def test_sandbox_unconfigured_honest_requires_sandbox_state():
     assert not result.is_available
     assert result.compile_status == "unavailable"
     assert "REQUIRES_SANDBOX" in result.error_message
+
+
+@pytest.mark.asyncio
+async def test_worker_non_blocking_retry_drains_subsequent_jobs():
+    """Verify that a failing job waiting on exponential backoff does NOT block subsequent queue jobs.
+    
+    Previous bug: A synchronous await asyncio.sleep(...) inside _worker_loop blocked
+    the entire loop, causing queue_depth=2 with running=0 while subsequent jobs were starved.
+    """
+    worker = BackgroundJobWorker()
+    job2_executed = asyncio.Event()
+    job1_attempts = 0
+
+    async def failing_handler(payload):
+        nonlocal job1_attempts
+        job1_attempts += 1
+        raise ValueError("Simulated failure")
+
+    async def healthy_handler(payload):
+        job2_executed.set()
+
+    worker.register_handler("job1_fail", failing_handler)
+    worker.register_handler("job2_healthy", healthy_handler)
+
+    # Enqueue job1 (fails) then job2 (healthy)
+    await worker.enqueue("job1_fail", {}, max_retries=2)
+    await worker.enqueue("job2_healthy", {})
+
+    # Start worker
+    worker.start()
+
+    # Job2 should execute quickly even though Job1 is retrying
+    await asyncio.wait_for(job2_executed.wait(), timeout=3.0)
+    assert job2_executed.is_set(), "Job 2 was blocked by Job 1's retry sleep!"
+
+    metrics = worker.get_metrics()
+    assert metrics["completed"] >= 1
+    # Check metric invariant: total_jobs == completed + failed + running + queue_depth
+    assert metrics["total_jobs"] == metrics["completed"] + metrics["failed"] + metrics["running"] + metrics["queue_depth"]
+
+    await worker.stop()
+

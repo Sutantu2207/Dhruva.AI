@@ -65,9 +65,10 @@ Railway immediately bypasses Railpack, detects the multi-stage `Dockerfile.backe
 Railway assigns a dynamic port (e.g., `PORT=6543`) to each container instance.
 `Dockerfile.backend` binds dynamically via shell `exec`:
 ```dockerfile
-CMD ["sh", "-c", "exec python -m uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers ${WEB_CONCURRENCY:-2} --proxy-headers --forwarded-allow-ips '*'"]
+CMD ["sh", "-c", "exec python -m uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers ${WEB_CONCURRENCY:-1} --proxy-headers --forwarded-allow-ips '*'"]
 ```
 - **0.0.0.0 Binding**: Accessible to Railway's edge reverse proxy.
+- **Single Process Default (`--workers 1`)**: Ensures unified in-process background worker queue and scheduler lifecycle without process bifurcation.
 - **Signal Handling (`exec`)**: Replaces the shell process with Python, ensuring `uvicorn` receives OS signals (`SIGTERM`/`SIGINT`) for graceful shutdown.
 - **Dynamic Healthcheck**: Probes `http://127.0.0.1:${PORT:-8000}/health/live`.
 

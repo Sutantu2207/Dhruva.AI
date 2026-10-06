@@ -38,6 +38,7 @@ class BackgroundJobWorker:
         self._handlers: Dict[str, Callable] = {}
         self._job_history: List[JobRecord] = []
         self._worker_task: Optional[asyncio.Task] = None
+        self._retry_tasks: set[asyncio.Task] = set()
         self._is_running = False
 
     def register_handler(self, job_name: str, handler: Callable) -> None:
@@ -90,10 +91,21 @@ class BackgroundJobWorker:
                 except Exception as exc:
                     logger.error(f"Job '{record.name}' [id={record.id}] failed (attempt {record.attempts}): {exc}")
                     if record.attempts < record.max_retries:
-                        # Re-enqueue for retry
+                        # Re-enqueue for retry asynchronously without blocking the consumer loop
                         record.status = "PENDING"
-                        await asyncio.sleep(2 ** record.attempts)  # Exponential backoff
-                        await self._queue.put(record)
+                        backoff_delay = 2 ** record.attempts
+
+                        async def _delayed_retry(rec: JobRecord, delay: float) -> None:
+                            try:
+                                await asyncio.sleep(delay)
+                                if self._is_running:
+                                    await self._queue.put(rec)
+                            except asyncio.CancelledError:
+                                pass
+
+                        task = asyncio.create_task(_delayed_retry(record, backoff_delay))
+                        self._retry_tasks.add(task)
+                        task.add_done_callback(self._retry_tasks.discard)
                     else:
                         record.status = "FAILED"
                         record.error = str(exc)
@@ -131,6 +143,11 @@ class BackgroundJobWorker:
                 await self._worker_task
             except asyncio.CancelledError:
                 pass
+        for task in list(self._retry_tasks):
+            task.cancel()
+        if self._retry_tasks:
+            await asyncio.gather(*self._retry_tasks, return_exceptions=True)
+            self._retry_tasks.clear()
 
     def get_metrics(self) -> dict:
         """Returns observability metrics for job executions."""
@@ -138,7 +155,7 @@ class BackgroundJobWorker:
         completed = sum(1 for j in self._job_history if j.status == "COMPLETED")
         failed = sum(1 for j in self._job_history if j.status == "FAILED")
         running = sum(1 for j in self._job_history if j.status == "RUNNING")
-        pending = self._queue.qsize()
+        pending = sum(1 for j in self._job_history if j.status == "PENDING")
 
         return {
             "is_running": self._is_running,
