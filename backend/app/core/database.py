@@ -122,10 +122,44 @@ async def check_database_health(session: AsyncSession = None) -> Dict[str, Any]:
     try:
         async with async_engine.connect() as conn:
             await conn.execute(text("SELECT 1"))
+
+            # Safe diagnostic introspection without leaking credentials
+            current_db = (await conn.execute(text("SELECT current_database()"))).scalar()
+            current_schema = (await conn.execute(text("SELECT current_schema()"))).scalar()
+            search_path = (await conn.execute(text("SHOW search_path"))).scalar()
+
+            has_inst_public = (await conn.execute(text("SELECT to_regclass('public.institutions')"))).scalar() is not None
+            has_sess_public = (await conn.execute(text("SELECT to_regclass('public.user_sessions')"))).scalar() is not None
+            has_inst_any = (await conn.execute(text("SELECT to_regclass('institutions')"))).scalar() is not None
+            has_sess_any = (await conn.execute(text("SELECT to_regclass('user_sessions')"))).scalar() is not None
+
+            alembic_rev = None
+            try:
+                alembic_rev = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar()
+            except Exception:
+                pass
+
+            raw_host = async_engine.url.host or "unknown"
+            port = async_engine.url.port or 5432
+            if ".proxy.rlwy.net" in raw_host:
+                parts = raw_host.split(".")
+                sanitized_server = f"{parts[0][:4]}***.{'.'.join(parts[1:])}:{port}"
+            else:
+                sanitized_server = f"{raw_host}:{port}"
+
         return {
             "status": "healthy",
             "database": "postgresql",
             "connected": True,
+            "database_name": current_db,
+            "current_schema": current_schema,
+            "search_path": search_path,
+            "has_institutions": has_inst_public or has_inst_any,
+            "has_user_sessions": has_sess_public or has_sess_any,
+            "to_regclass_institutions_public": has_inst_public,
+            "to_regclass_user_sessions_public": has_sess_public,
+            "alembic_version": alembic_rev,
+            "sanitized_server": sanitized_server,
         }
     except Exception as exc:
         logger.warning(f"Database health check failed (PostgreSQL not connected): {exc}")
