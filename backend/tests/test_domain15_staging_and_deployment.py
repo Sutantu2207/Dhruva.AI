@@ -219,3 +219,32 @@ def test_backend_dockerfile_railway_contract():
     assert "0.0.0.0" in content
     assert "USER dhruva:dhruva" in content
     assert "HEALTHCHECK" in content
+
+
+def test_alembic_migrations_chain_and_head_completeness():
+    """Verify that Alembic migration revisions form an unbroken linear chain up to 0013 head."""
+    from pathlib import Path
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    backend_root = Path(__file__).resolve().parent.parent
+    ini_path = backend_root / "alembic.ini"
+    assert ini_path.exists(), "alembic.ini must exist in backend directory"
+
+    config = Config(str(ini_path))
+    script = ScriptDirectory.from_config(config)
+
+    # 1. Exactly one head revision
+    heads = script.get_heads()
+    assert len(heads) == 1, f"Expected single migration head, got: {heads}"
+    assert heads[0] == "0013_create_production_operations_tables"
+
+    # 2. Exactly 13 sequential revisions
+    revisions = list(script.walk_revisions())
+    assert len(revisions) == 13, f"Expected 13 revisions, found: {len(revisions)}"
+
+    # 3. Unbroken dependency chain from 0001 to 0013
+    ordered_rev_ids = [r.revision for r in reversed(revisions)]
+    assert ordered_rev_ids[0] == "0001_create_identity_tables"
+    assert ordered_rev_ids[-1] == "0013_create_production_operations_tables"
+
