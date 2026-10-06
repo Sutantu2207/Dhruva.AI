@@ -17,6 +17,46 @@ class Base(DeclarativeBase):
     pass
 
 
+def patch_alembic_version_table(length: int = 255) -> None:
+    """Patch Alembic's DefaultImpl.version_table_impl to create alembic_version.version_num
+    with VARCHAR(length) instead of the default VARCHAR(32).
+    
+    This ensures descriptive migration identifiers (e.g., 0013_create_production_operations_tables)
+    do not trigger StringDataRightTruncationError in PostgreSQL or other relational databases.
+    """
+    try:
+        from alembic.ddl.impl import DefaultImpl
+        from sqlalchemy import Table, MetaData, Column, String, PrimaryKeyConstraint
+
+        def _custom_version_table_impl(
+            self,
+            *,
+            version_table: str,
+            version_table_schema: str | None,
+            version_table_pk: bool,
+            **kw,
+        ) -> Table:
+            vt = Table(
+                version_table,
+                MetaData(),
+                Column("version_num", String(length), nullable=False),
+                schema=version_table_schema,
+            )
+            if version_table_pk:
+                vt.append_constraint(
+                    PrimaryKeyConstraint("version_num", name=f"{version_table}_pkc")
+                )
+            return vt
+
+        DefaultImpl.version_table_impl = _custom_version_table_impl
+    except ImportError:
+        pass
+
+
+# Apply the version table patch automatically on database module load
+patch_alembic_version_table()
+
+
 # Async engine configured for PostgreSQL with asyncpg driver (or test databases)
 engine_kwargs: Dict[str, Any] = {
     "echo": settings.DEBUG,

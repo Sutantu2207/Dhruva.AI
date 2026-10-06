@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from alembic import context
 
 from app.core.config import settings
-from app.core.database import Base
+from app.core.database import Base, patch_alembic_version_table
 # Import all identity and academic models to ensure they register on Base.metadata
 from app.domains.identity.models import (
     User,
@@ -157,6 +157,12 @@ from app.domains.audit.notification_models import (
     NotificationPreference,
 )
 
+from sqlalchemy import text
+
+# Ensure DefaultImpl.version_table_impl creates alembic_version.version_num
+# with VARCHAR(255) instead of Alembic's default VARCHAR(32).
+patch_alembic_version_table(255)
+
 config = context.config
 
 if config.config_file_name is not None:
@@ -180,6 +186,25 @@ def run_migrations_offline() -> None:
 
 
 def do_run_migrations(connection):
+    # Ensure alembic_version.version_num is widened if alembic_version was already
+    # created on PostgreSQL with Alembic's legacy 32-character limit.
+    if connection.dialect.name == "postgresql":
+        try:
+            connection.execute(
+                text(
+                    "DO $$ BEGIN "
+                    "IF EXISTS (SELECT 1 FROM information_schema.columns "
+                    "           WHERE table_name = 'alembic_version' "
+                    "           AND column_name = 'version_num' "
+                    "           AND character_maximum_length < 255) THEN "
+                    "    ALTER TABLE alembic_version ALTER COLUMN version_num TYPE VARCHAR(255); "
+                    "END IF; "
+                    "END $$;"
+                )
+            )
+        except Exception:
+            pass  # Non-fatal if table does not exist or user lacks ALTER permissions
+
     context.configure(connection=connection, target_metadata=target_metadata)
     with context.begin_transaction():
         context.run_migrations()
@@ -203,3 +228,4 @@ if context.is_offline_mode():
     run_migrations_offline()
 else:
     run_migrations_online()
+

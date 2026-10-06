@@ -248,3 +248,64 @@ def test_alembic_migrations_chain_and_head_completeness():
     assert ordered_rev_ids[0] == "0001_create_identity_tables"
     assert ordered_rev_ids[-1] == "0013_create_production_operations_tables"
 
+
+def test_alembic_revision_identifier_lengths_and_version_column_capacity():
+    """Verify that all Alembic revision identifiers fit within VARCHAR(255) and version_table_impl allocates String(255).
+    
+    Alembic's default version table allocates VARCHAR(32) for version_num, which fails when revision
+    identifiers exceed 32 characters (e.g. 0007_create_knowledge_state_tables has 35 chars,
+    0013_create_production_operations_tables has 40 chars).
+    This test verifies:
+    1. Every revision identifier fits within 255 characters.
+    2. The exact revisions exceeding the legacy 32-character limit are tracked.
+    3. The patched DefaultImpl.version_table_impl allocates VARCHAR(255) for version_num.
+    """
+    from pathlib import Path
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+    from alembic.ddl.impl import DefaultImpl
+    from app.core.database import patch_alembic_version_table
+
+    # Ensure the patch is applied
+    patch_alembic_version_table(255)
+
+    backend_root = Path(__file__).resolve().parent.parent
+    ini_path = backend_root / "alembic.ini"
+    config = Config(str(ini_path))
+    script = ScriptDirectory.from_config(config)
+
+    revisions = list(script.walk_revisions())
+    assert len(revisions) == 13
+
+    # 1. All revisions must fit within 255 characters
+    for rev in revisions:
+        assert len(rev.revision) <= 255, f"Revision ID {rev.revision} exceeds 255 characters"
+
+    # 2. Confirm the exact revisions that exceed Alembic's default VARCHAR(32) limit
+    long_revisions = [r.revision for r in revisions if len(r.revision) > 32]
+    expected_long_revisions = {
+        "0007_create_knowledge_state_tables": 34,
+        "0010_create_institutional_analytics": 35,
+        "0013_create_production_operations_tables": 40,
+    }
+    assert set(long_revisions) == set(expected_long_revisions.keys()), (
+        f"Unexpected revisions exceeding 32 chars: {long_revisions}"
+    )
+    for rev_id, expected_len in expected_long_revisions.items():
+        assert len(rev_id) == expected_len
+
+    # 3. Verify DefaultImpl.version_table_impl constructs version_num with String(255)
+    vt = DefaultImpl.version_table_impl(
+        None,  # self
+        version_table="alembic_version",
+        version_table_schema=None,
+        version_table_pk=True,
+    )
+    assert vt.name == "alembic_version"
+    assert "version_num" in vt.c
+    version_col = vt.c["version_num"]
+    assert version_col.type.length == 255, (
+        f"Expected version_num length 255, got {version_col.type.length}"
+    )
+    assert not version_col.nullable
+
