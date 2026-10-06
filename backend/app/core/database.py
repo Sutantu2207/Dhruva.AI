@@ -133,12 +133,14 @@ async def check_database_health(session: AsyncSession = None) -> Dict[str, Any]:
             has_inst_any = (await conn.execute(text("SELECT to_regclass('institutions')"))).scalar() is not None
             has_sess_any = (await conn.execute(text("SELECT to_regclass('user_sessions')"))).scalar() is not None
 
+            has_alembic_table = (await conn.execute(text("SELECT to_regclass('public.alembic_version')"))).scalar() is not None
             alembic_rev = None
-            try:
-                alembic_res = await conn.execute(text("SELECT version_num FROM alembic_version"))
-                alembic_rev = alembic_res.scalar()
-            except Exception:
-                pass
+            if has_alembic_table:
+                try:
+                    alembic_res = await conn.execute(text("SELECT version_num FROM alembic_version"))
+                    alembic_rev = alembic_res.scalar()
+                except Exception:
+                    await conn.rollback()
 
             # Inspect all tables in public schema
             tables_res = await conn.execute(text(
