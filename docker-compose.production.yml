@@ -1,6 +1,10 @@
-# Mirror of docker-compose.production.yml for backwards compatibility
-# See docker-compose.production.yml for full topology specifications.
+# ==============================================================================
+# DHRUVA.AI — PRODUCTION CONTAINER TOPOLOGY
+# Multi-Tier Zero-Trust Architecture: Reverse Proxy -> Frontend/API -> Data Layer
+# ==============================================================================
+
 services:
+  # 1. Edge Ingress & Reverse Proxy (Only service exposing public ports 80 & 443)
   proxy:
     image: nginx:1.27-alpine
     container_name: dhruva_prod_proxy
@@ -25,6 +29,7 @@ services:
       timeout: 5s
       retries: 3
 
+  # 2. Frontend Web Application (Next.js 15 SSR / Static)
   frontend:
     build:
       context: .
@@ -48,6 +53,7 @@ services:
       timeout: 5s
       retries: 3
 
+  # 3. Backend Core API (FastAPI + Uvicorn)
   backend:
     build:
       context: .
@@ -79,6 +85,7 @@ services:
       start_period: 15s
       retries: 3
 
+  # 4. Background Job Worker
   worker:
     build:
       context: .
@@ -102,6 +109,7 @@ services:
     networks:
       - dhruva_internal
 
+  # 5. Background Scheduler
   scheduler:
     build:
       context: .
@@ -125,10 +133,12 @@ services:
     networks:
       - dhruva_internal
 
+  # 6. Primary Relational & Vector Database (PostgreSQL 16 + pgvector)
   postgres:
     image: pgvector/pgvector:pg16
     container_name: dhruva_prod_postgres
     restart: always
+    # STRICT SECURITY: Ports are NEVER published to host; internal Docker network only
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-dhruva_admin}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me_strong_prod_db_pw}
@@ -143,10 +153,12 @@ services:
     networks:
       - dhruva_internal
 
+  # 7. Distributed Cache & Coordination (Redis 7 Alpine)
   redis:
     image: redis:7-alpine
     container_name: dhruva_prod_redis
     restart: always
+    # STRICT SECURITY: Ports are NEVER published to host; internal Docker network only
     command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-change_me_strong_redis_pw}
     volumes:
       - redis_prod_data:/data

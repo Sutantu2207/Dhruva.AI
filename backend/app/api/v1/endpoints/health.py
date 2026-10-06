@@ -21,6 +21,11 @@ from app import __version__
 router = APIRouter(tags=["Health & Operations"])
 
 
+from app.core.storage import check_storage_health
+from app.domains.assessment.evaluators.coding import check_sandbox_health
+from app.domains.identity.email_service import check_email_health
+
+
 class LivenessResponse(BaseModel):
     status: str
     timestamp: datetime
@@ -34,7 +39,10 @@ class ReadinessResponse(BaseModel):
     database: Dict[str, Any]
     redis: Dict[str, Any]
     workers: Dict[str, Any]
+    storage: Dict[str, Any]
+    email: Dict[str, Any]
     ai_provider: Dict[str, Any]
+    sandbox: Dict[str, Any]
 
 
 @router.get("/health/live", response_model=LivenessResponse)
@@ -48,8 +56,8 @@ async def liveness_probe() -> LivenessResponse:
 
 @router.get("/health/ready", response_model=ReadinessResponse)
 async def readiness_probe(response: Response) -> ReadinessResponse:
-    """Production readiness probe evaluating required platform dependencies."""
-    # 1. Database check
+    """Production readiness probe evaluating required and optional platform dependencies."""
+    # 1. Database check (mandatory - core authority)
     db_health = await check_database_health()
     db_ok = db_health.get("connected", False)
 
@@ -59,14 +67,28 @@ async def readiness_probe(response: Response) -> ReadinessResponse:
     # 3. Worker check
     worker_metrics = job_worker.get_metrics()
 
-    # 4. AI check (non-blocking: lack of key in dev/staging is degraded, not fatal)
+    # 4. Storage check
+    storage_health = check_storage_health()
+
+    # 5. Email check
+    email_health = check_email_health()
+
+    # 6. AI check (non-blocking: lack of key in dev/staging is degraded, not fatal)
     ai_health = gemini_provider.health_check()
+
+    # 7. Sandbox check (coding assessment execution dependency)
+    sandbox_health = check_sandbox_health()
 
     # Determine overall readiness
     if not db_ok:
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
         overall_status = "unhealthy"
-    elif redis_health.get("status") == "degraded" or ai_health.get("status") != "healthy":
+    elif (
+        redis_health.get("status") == "degraded"
+        or ai_health.get("status") != "healthy"
+        or storage_health.get("status") != "healthy"
+        or sandbox_health.get("status") != "healthy"
+    ):
         overall_status = "degraded"
     else:
         overall_status = "healthy"
@@ -79,7 +101,10 @@ async def readiness_probe(response: Response) -> ReadinessResponse:
         database=db_health,
         redis=redis_health,
         workers=worker_metrics,
+        storage=storage_health,
+        email=email_health,
         ai_provider=ai_health,
+        sandbox=sandbox_health,
     )
 
 

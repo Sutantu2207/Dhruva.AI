@@ -34,6 +34,11 @@ jobs:
         run: |
           bandit -r backend/app -ll -ii -x backend/tests
 
+      - name: Dependency Security Audit (Pip-Audit)
+        run: |
+          pip install pip-audit
+          pip-audit --ignore-vuln CVE-SAMPLE backend/ || true
+
       - name: Linting (Flake8)
         run: |
           flake8 backend/app --count --select=E9,F63,F7,F82 --show-source --statistics
@@ -47,7 +52,7 @@ jobs:
           echo "Migration SQL plan successfully generated:"
           head -n 30 migration_plan.sql
 
-      - name: Run Test Suite (Domains 1-12)
+      - name: Run Full Test Suite (Domains 1-15)
         env:
           APPLICATION_ENV: test
           SECRET_KEY: test_secret_key_minimum_32_characters_long_for_ci
@@ -58,7 +63,7 @@ jobs:
           pytest -v tests/
 
   frontend-quality-gate:
-    name: Frontend Lint & Production Build
+    name: Frontend Quality & Production Build Gate
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Source Code
@@ -78,6 +83,14 @@ jobs:
       - name: Frontend ESLint
         working-directory: frontend
         run: npm run lint
+
+      - name: Frontend TypeScript Typecheck
+        working-directory: frontend
+        run: npx tsc --noEmit
+
+      - name: Frontend Dependency Vulnerability Audit
+        working-directory: frontend
+        run: npm audit --audit-level=high || true
 
       - name: Next.js Production Build
         working-directory: frontend

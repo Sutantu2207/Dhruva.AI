@@ -116,6 +116,124 @@ class MockSandboxProvider(CodeExecutionProvider):
         )
 
 
+import httpx
+from app.core.config import settings
+from app.core.logging import logger
+
+
+class HttpSandboxProvider(CodeExecutionProvider):
+    """Production REST client for isolated sandbox execution cluster (e.g., Docker/gVisor/Firecracker).
+
+    Invariants:
+    - Never executes untrusted code inside the FastAPI process.
+    - If SANDBOX_API_URL is missing or unavailable, returns compile_status="unavailable"
+      and error_message="REQUIRES_SANDBOX", never faking execution or test results.
+    """
+
+    def __init__(
+        self,
+        api_url: Optional[str] = None,
+        api_token: Optional[str] = None,
+        timeout_seconds: Optional[int] = None,
+    ):
+        self.api_url = (api_url or settings.SANDBOX_API_URL or "").rstrip("/")
+        self.api_token = api_token or settings.SANDBOX_API_TOKEN
+        self.timeout_seconds = timeout_seconds or settings.SANDBOX_TIMEOUT_SECONDS
+
+    @property
+    def is_configured(self) -> bool:
+        return bool(self.api_url)
+
+    def execute(self, req: ExecutionRequest) -> ExecutionResponse:
+        if not self.is_configured:
+            return ExecutionResponse(
+                is_available=False,
+                compile_status="unavailable",
+                error_message="Sandbox cluster not configured (REQUIRES_SANDBOX).",
+                test_results=[],
+                tests_passed=0,
+                total_tests=len(req.test_cases),
+            )
+
+        headers = {"Content-Type": "application/json"}
+        if self.api_token:
+            headers["Authorization"] = f"Bearer {self.api_token}"
+
+        payload = {
+            "language": req.language,
+            "code": req.code,
+            "time_limit_ms": min(req.time_limit_ms, self.timeout_seconds * 1000),
+            "memory_limit_mb": min(req.memory_limit_mb, settings.SANDBOX_MAX_MEMORY_MB),
+            "test_cases": [
+                {
+                    "input_data": tc.input_data,
+                    "expected_output": tc.expected_output,
+                    "is_hidden": tc.is_hidden,
+                    "points_weight": float(tc.points_weight),
+                }
+                for tc in req.test_cases
+            ],
+        }
+
+        try:
+            with httpx.Client(timeout=float(self.timeout_seconds)) as client:
+                resp = client.post(f"{self.api_url}/execute", json=payload, headers=headers)
+                if resp.status_code != 200:
+                    logger.warning(f"Sandbox runner HTTP error {resp.status_code}: {resp.text}")
+                    return ExecutionResponse(
+                        is_available=False,
+                        compile_status="unavailable",
+                        error_message=f"Sandbox runner HTTP {resp.status_code} (REQUIRES_SANDBOX)",
+                        test_results=[],
+                        tests_passed=0,
+                        total_tests=len(req.test_cases),
+                    )
+
+                data = resp.json()
+                results = [
+                    ExecutionTestResult(**tr)
+                    for tr in data.get("test_results", [])
+                ]
+                return ExecutionResponse(
+                    is_available=data.get("is_available", True),
+                    compile_status=data.get("compile_status", "ok"),
+                    error_message=data.get("error_message"),
+                    test_results=results,
+                    tests_passed=data.get("tests_passed", 0),
+                    total_tests=data.get("total_tests", len(req.test_cases)),
+                )
+        except Exception as exc:
+            logger.warning(f"Sandbox runner connection failed: {exc}")
+            return ExecutionResponse(
+                is_available=False,
+                compile_status="unavailable",
+                error_message=f"Sandbox runner unreachable: {exc} (REQUIRES_SANDBOX)",
+                test_results=[],
+                tests_passed=0,
+                total_tests=len(req.test_cases),
+            )
+
+    def check_health(self) -> Dict[str, Any]:
+        """Probes the sandbox service for platform readiness."""
+        if not self.is_configured:
+            return {
+                "status": "degraded",
+                "configured": False,
+                "message": "SANDBOX_API_URL not configured; coding execution marked offline",
+            }
+        headers = {}
+        if self.api_token:
+            headers["Authorization"] = f"Bearer {self.api_token}"
+        try:
+            with httpx.Client(timeout=2.0) as client:
+                res = client.get(f"{self.api_url}/health", headers=headers)
+                if res.status_code == 200:
+                    return {"status": "healthy", "configured": True, "details": res.json()}
+                return {"status": "degraded", "configured": True, "http_status": res.status_code}
+        except Exception as exc:
+            return {"status": "degraded", "configured": True, "error": str(exc)}
+
+
 # Global active provider (defaults to UnavailableCodeExecutionProvider for strict security)
 _active_provider: CodeExecutionProvider = UnavailableCodeExecutionProvider()
 
@@ -129,7 +247,23 @@ def set_code_execution_provider(provider: CodeExecutionProvider) -> None:
 def get_code_execution_provider() -> CodeExecutionProvider:
     """Returns the configured code execution provider."""
     global _active_provider
+    if isinstance(_active_provider, UnavailableCodeExecutionProvider) and settings.SANDBOX_API_URL:
+        return HttpSandboxProvider()
     return _active_provider
+
+
+def check_sandbox_health() -> Dict[str, Any]:
+    """Probes sandbox execution readiness."""
+    provider = get_code_execution_provider()
+    if isinstance(provider, HttpSandboxProvider):
+        return provider.check_health()
+    elif isinstance(provider, MockSandboxProvider):
+        return {"status": "healthy", "configured": True, "provider": "mock"}
+    return {
+        "status": "degraded",
+        "configured": False,
+        "message": "No active sandbox provider configured (REQUIRES_SANDBOX)",
+    }
 
 
 class CodingEvaluator:

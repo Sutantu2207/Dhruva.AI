@@ -17,14 +17,29 @@ class Base(DeclarativeBase):
     pass
 
 
-# Async engine configured for PostgreSQL with asyncpg driver
+# Async engine configured for PostgreSQL with asyncpg driver (or test databases)
+engine_kwargs: Dict[str, Any] = {
+    "echo": settings.DEBUG,
+    "pool_pre_ping": True,
+}
+
+if "sqlite" not in settings.DATABASE_URL:
+    engine_kwargs.update({
+        "pool_size": settings.DATABASE_POOL_SIZE,
+        "max_overflow": settings.DATABASE_MAX_OVERFLOW,
+        "pool_timeout": settings.DATABASE_POOL_TIMEOUT,
+    })
+    if "asyncpg" in settings.DATABASE_URL:
+        engine_kwargs["connect_args"] = {
+            "command_timeout": settings.DATABASE_POOL_TIMEOUT,
+            "server_settings": {
+                "statement_timeout": str(settings.DATABASE_STATEMENT_TIMEOUT_MS),
+            },
+        }
+
 async_engine = create_async_engine(
     settings.DATABASE_URL,
-    echo=settings.DEBUG,
-    pool_size=settings.DATABASE_POOL_SIZE,
-    max_overflow=settings.DATABASE_MAX_OVERFLOW,
-    pool_timeout=settings.DATABASE_POOL_TIMEOUT,
-    pool_pre_ping=True,
+    **engine_kwargs,
 )
 
 # Async session factory

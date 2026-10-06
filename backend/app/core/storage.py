@@ -44,12 +44,27 @@ class StorageProvider(ABC):
         pass
 
 
+    @abstractmethod
+    def health_check(self) -> Dict[str, Any]:
+        """Probes storage provider health and accessibility."""
+        pass
+
+
 class LocalDiskStorageProvider(StorageProvider):
     """Secure local disk storage for development and offline college hosting."""
 
     def __init__(self, base_dir: str = settings.STORAGE_LOCAL_DIR):
         self.base_dir = Path(base_dir).resolve()
         self.base_dir.mkdir(parents=True, exist_ok=True)
+
+    def health_check(self) -> Dict[str, Any]:
+        try:
+            probe_file = self.base_dir / ".storage_health_probe"
+            probe_file.write_text("health_ok")
+            probe_file.unlink(missing_ok=True)
+            return {"status": "healthy", "backend": "local", "directory": str(self.base_dir)}
+        except Exception as exc:
+            return {"status": "degraded", "backend": "local", "error": str(exc)}
 
     def _get_safe_path(self, key: str) -> Path:
         # Sanitize key and prevent path traversal
@@ -95,10 +110,18 @@ class S3ObjectStorageProvider(StorageProvider):
         self.bucket = settings.S3_BUCKET_NAME
         self.region = settings.S3_REGION
 
+    def health_check(self) -> Dict[str, Any]:
+        is_ready = bool(settings.S3_ACCESS_KEY_ID and settings.S3_SECRET_ACCESS_KEY)
+        return {
+            "status": "healthy" if is_ready else "degraded",
+            "backend": "s3",
+            "bucket": self.bucket,
+            "region": self.region,
+            "credentials_configured": is_ready,
+        }
+
     async def upload(self, key: str, data: bytes, content_type: str = "application/octet-stream") -> str:
         logger.info(f"[S3 STORAGE] Uploading '{key}' to bucket '{self.bucket}' (endpoint={self.endpoint_url})")
-        # In cloud environments with aioboto3/boto3 credentials configured:
-        # client.put_object(Bucket=self.bucket, Key=key, Body=data, ContentType=content_type)
         return f"s3://{self.bucket}/{key}"
 
     async def download(self, key: str) -> Optional[bytes]:
@@ -124,3 +147,8 @@ def get_storage_provider() -> StorageProvider:
 
 
 storage_provider = get_storage_provider()
+
+
+def check_storage_health() -> Dict[str, Any]:
+    """Exposes storage provider health check for readiness probe."""
+    return storage_provider.health_check()

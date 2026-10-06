@@ -47,6 +47,8 @@ class Settings(BaseSettings):
     DATABASE_POOL_SIZE: int = Field(default=10)
     DATABASE_MAX_OVERFLOW: int = Field(default=20)
     DATABASE_POOL_TIMEOUT: int = Field(default=30)
+    DATABASE_STATEMENT_TIMEOUT_MS: int = Field(default=15000)
+    DATABASE_SSL_MODE: str = Field(default="prefer")
 
     # CORS
     CORS_ORIGINS: Union[List[str], str] = Field(
@@ -82,7 +84,16 @@ class Settings(BaseSettings):
     SMTP_PORT: int = Field(default=587)
     SMTP_USER: Union[str, None] = Field(default=None)
     SMTP_PASSWORD: Union[str, None] = Field(default=None)
+    SMTP_USE_TLS: bool = Field(default=True)
+    SMTP_TIMEOUT_SECONDS: int = Field(default=10)
     EMAIL_FROM: str = Field(default="Dhruva.AI <noreply@dhruva.ai>")
+
+    # Coding Sandbox Execution Cluster (Domain 15 Production Integration)
+    SANDBOX_API_URL: Union[str, None] = Field(default=None)
+    SANDBOX_API_TOKEN: Union[str, None] = Field(default=None)
+    SANDBOX_TIMEOUT_SECONDS: int = Field(default=5)
+    SANDBOX_MAX_MEMORY_MB: int = Field(default=256)
+    SANDBOX_MAX_OUTPUT_BYTES: int = Field(default=65536)
 
     # AI Governance & Cost Bounds (Domain 11 Production Tuning)
     GEMINI_API_KEY: str = Field(default="")
@@ -115,14 +126,29 @@ class Settings(BaseSettings):
         return self.ENVIRONMENT.lower() == "staging"
 
     def validate_production_secrets(self) -> None:
-        """Fail-fast validation for critical secrets in production."""
-        if self.is_production:
+        """Fail-fast validation for critical secrets in production and staging."""
+        if self.is_production or self.is_staging:
             if "fallback" in self.SECRET_KEY.lower() or len(self.SECRET_KEY) < 32:
                 raise ValueError(
-                    "CRITICAL PRODUCTION VIOLATION: SECRET_KEY must be an unpredictable secret of at least 32 characters in production."
+                    "CRITICAL PRODUCTION VIOLATION: SECRET_KEY must be an unpredictable secret of at least 32 characters in production/staging."
                 )
-            if "localhost" in self.DATABASE_URL.lower() and not self.DEBUG:
-                pass  # Localhost database acceptable in single-node bare-metal/docker setups
+            if "*" in self.CORS_ORIGINS:
+                raise ValueError(
+                    "CRITICAL PRODUCTION VIOLATION: Wildcard CORS origin ('*') is prohibited with credentials."
+                )
+
+    def validate_production_deployment(self) -> None:
+        """Full validation of environment and deployment flags in production."""
+        self.validate_production_secrets()
+        if self.is_production:
+            if not self.COOKIE_SECURE:
+                raise ValueError(
+                    "CRITICAL PRODUCTION VIOLATION: COOKIE_SECURE must be True in production to enforce HTTPS cookie transmission."
+                )
+            if "dhruva_secret_change_in_prod" in self.DATABASE_URL:
+                raise ValueError(
+                    "CRITICAL PRODUCTION VIOLATION: DATABASE_URL contains default insecure development password."
+                )
 
 
 settings = Settings()
