@@ -1,0 +1,132 @@
+# =============================================================================
+# DHRUVA.AI - Production Container Topology
+# Separable Microservices: Backend API, Worker, Scheduler, Frontend, DB, Redis
+# =============================================================================
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: dhruva_prod_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_prod_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - dhruva_internal
+
+  redis:
+    image: redis:7-alpine
+    container_name: dhruva_prod_redis
+    restart: always
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD}
+    volumes:
+      - redis_prod_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - dhruva_internal
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: dhruva_prod_backend
+    restart: always
+    env_file:
+      - ./backend/.env.production
+    environment:
+      - APPLICATION_ENV=production
+      - DATABASE_URL=postgresql+psycopg://$$POSTGRES_USER:$$POSTGRES_PASSWORD@postgres:5432/$$POSTGRES_DB
+      - REDIS_URL=redis://:$$REDIS_PASSWORD@redis:6379/0
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - dhruva_internal
+      - dhruva_edge
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: dhruva_prod_worker
+    restart: always
+    command: ["python", "-m", "app.core.worker"]
+    env_file:
+      - ./backend/.env.production
+    environment:
+      - APPLICATION_ENV=production
+      - DATABASE_URL=postgresql+psycopg://$$POSTGRES_USER:$$POSTGRES_PASSWORD@postgres:5432/$$POSTGRES_DB
+      - REDIS_URL=redis://:$$REDIS_PASSWORD@redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - dhruva_internal
+
+  scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: dhruva_prod_scheduler
+    restart: always
+    command: ["python", "-m", "app.core.scheduler"]
+    env_file:
+      - ./backend/.env.production
+    environment:
+      - APPLICATION_ENV=production
+      - DATABASE_URL=postgresql+psycopg://$$POSTGRES_USER:$$POSTGRES_PASSWORD@postgres:5432/$$POSTGRES_DB
+      - REDIS_URL=redis://:$$REDIS_PASSWORD@redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - dhruva_internal
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: dhruva_prod_frontend
+    restart: always
+    environment:
+      - NODE_ENV=production
+      - NEXT_PUBLIC_API_URL=http://backend:8000/api/v1
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    networks:
+      - dhruva_edge
+
+networks:
+  dhruva_internal:
+    driver: bridge
+    internal: true
+  dhruva_edge:
+    driver: bridge
+
+volumes:
+  postgres_prod_data:
+    driver: local
+  redis_prod_data:
+    driver: local

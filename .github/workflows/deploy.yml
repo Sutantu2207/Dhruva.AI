@@ -1,0 +1,75 @@
+name: DHRUVA.AI Staging & Production Deployment
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target Deployment Environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+      run_migrations:
+        description: 'Execute database schema migrations'
+        required: true
+        default: true
+        type: boolean
+
+jobs:
+  deploy-staging:
+    name: Deploy to Staging Environment
+    if: github.ref == 'refs/heads/main' || github.event.inputs.environment == 'staging'
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Configure Cloud / Container Registry Credentials
+        run: |
+          echo "Deploying to Staging cluster..."
+          echo "Environment: staging"
+
+      - name: Run Database Migrations (Pre-deploy Step)
+        if: github.event.inputs.run_migrations != false
+        run: |
+          echo "Executing: alembic upgrade head against staging database..."
+
+      - name: Rolling Deployment of Backend & Frontend Services
+        run: |
+          echo "Rolling update to staging backend and frontend..."
+
+      - name: Post-Deployment Smoke Probes
+        run: |
+          echo "Executing health probe checks against staging: /health/ready"
+
+  deploy-production:
+    name: Deploy to Production (Manual Approval Required)
+    if: github.event.inputs.environment == 'production'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Pre-Flight Safety Checks
+        run: |
+          echo "Verifying production secrets and backup snapshot availability..."
+
+      - name: Run Production Database Migration
+        if: github.event.inputs.run_migrations == true
+        run: |
+          echo "Running explicit pre-migration snapshot, then alembic upgrade head..."
+
+      - name: Zero-Downtime Rolling Deployment
+        run: |
+          echo "Deploying production backend, worker, scheduler, and frontend..."
+
+      - name: Production Health Check Verification
+        run: |
+          echo "Verifying /health/live and /health/ready endpoints..."

@@ -1,0 +1,65 @@
+# =============================================================================
+# DHRUVA.AI - Production Backend Container
+# Multi-stage minimal footprint, non-root user, security hardened
+# =============================================================================
+
+# --- Stage 1: Dependency Builder ---
+FROM python:3.12-slim AS builder
+
+WORKDIR /build
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libpq-dev \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY backend/requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip wheel --no-cache-dir --no-deps --wheel-dir /build/wheels -r requirements.txt
+
+# --- Stage 2: Production Runtime ---
+FROM python:3.12-slim AS runner
+
+WORKDIR /app
+
+# Install minimal runtime dependencies (libpq for postgresql, curl for health checks)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq5 \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create unprivileged system user
+RUN groupadd -g 10001 dhruva && \
+    useradd -u 10001 -g dhruva -s /bin/bash -m dhruva
+
+# Install wheels from builder
+COPY --from=builder /build/wheels /wheels
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir /wheels/* && \
+    rm -rf /wheels
+
+# Copy backend application code
+COPY backend/alembic /app/alembic
+COPY backend/alembic.ini /app/alembic.ini
+COPY backend/app /app/app
+
+# Ensure directories for storage and logs exist with unprivileged ownership
+RUN mkdir -p /app/storage /app/logs && \
+    chown -R dhruva:dhruva /app
+
+USER dhruva:dhruva
+
+EXPOSE 8000
+
+ENV APPLICATION_ENV=production \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PORT=8000
+
+# Health check probe against canonical live endpoint
+HEALTHCHECK --interval=20s --timeout=5s --start-period=15s --retries=3 \
+    CMD curl -f http://localhost:8000/health/live || exit 1
+
+# Default command: production ASGI server
+CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4", "--proxy-headers", "--forwarded-allow-ips", "*"]
