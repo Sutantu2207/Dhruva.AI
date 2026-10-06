@@ -142,6 +142,14 @@ async def check_database_health(session: AsyncSession = None) -> Dict[str, Any]:
                 except Exception:
                     await conn.rollback()
 
+            # Inspect all databases on this PostgreSQL cluster
+            db_list_res = await conn.execute(text("SELECT datname FROM pg_database WHERE datistemplate = false ORDER BY datname"))
+            available_dbs = [r[0] for r in db_list_res.fetchall()]
+
+            # Inspect all schemas in current database
+            schema_list_res = await conn.execute(text("SELECT schema_name FROM information_schema.schemata ORDER BY schema_name"))
+            available_schemas = [r[0] for r in schema_list_res.fetchall()]
+
             # Inspect all tables in public schema
             tables_res = await conn.execute(text(
                 "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name"
@@ -161,7 +169,9 @@ async def check_database_health(session: AsyncSession = None) -> Dict[str, Any]:
             "database": "postgresql",
             "connected": True,
             "database_name": current_db,
+            "available_databases": available_dbs,
             "current_schema": current_schema,
+            "available_schemas": available_schemas,
             "search_path": search_path,
             "has_institutions": has_inst_public or has_inst_any,
             "has_user_sessions": has_sess_public or has_sess_any,
