@@ -150,11 +150,36 @@ async def check_database_health(session: AsyncSession = None) -> Dict[str, Any]:
             schema_list_res = await conn.execute(text("SELECT schema_name FROM information_schema.schemata ORDER BY schema_name"))
             available_schemas = [r[0] for r in schema_list_res.fetchall()]
 
-            # Inspect all tables in public schema
+            # Inspect all tables in current database public schema
             tables_res = await conn.execute(text(
                 "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name"
             ))
             all_tables = [r[0] for r in tables_res.fetchall()]
+
+            # Also inspect database 'postgres' on the same cluster if current_db != 'postgres'
+            postgres_db_info = {}
+            if "postgres" in available_dbs and current_db != "postgres":
+                try:
+                    alt_url = async_engine.url.set(database="postgres")
+                    alt_engine = create_async_engine(alt_url)
+                    async with alt_engine.connect() as alt_conn:
+                        alt_inst = (await alt_conn.execute(text("SELECT to_regclass('public.institutions')"))).scalar() is not None
+                        alt_sess = (await alt_conn.execute(text("SELECT to_regclass('public.user_sessions')"))).scalar() is not None
+                        alt_alembic_table = (await alt_conn.execute(text("SELECT to_regclass('public.alembic_version')"))).scalar() is not None
+                        alt_alembic_rev = None
+                        if alt_alembic_table:
+                            alt_alembic_rev = (await alt_conn.execute(text("SELECT version_num FROM alembic_version"))).scalar()
+                        alt_tables = [r[0] for r in (await alt_conn.execute(text("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name"))).fetchall()]
+                        postgres_db_info = {
+                            "has_institutions": alt_inst,
+                            "has_user_sessions": alt_sess,
+                            "alembic_version": alt_alembic_rev,
+                            "tables_count": len(alt_tables),
+                            "tables_sample": alt_tables[:10],
+                        }
+                    await alt_engine.dispose()
+                except Exception as alt_err:
+                    postgres_db_info = {"error": str(alt_err)}
 
             raw_host = async_engine.url.host or "unknown"
             port = async_engine.url.port or 5432
@@ -180,6 +205,7 @@ async def check_database_health(session: AsyncSession = None) -> Dict[str, Any]:
             "alembic_version": alembic_rev,
             "public_tables_count": len(all_tables),
             "public_tables_sample": all_tables[:10],
+            "database_postgres_companion": postgres_db_info,
             "sanitized_server": sanitized_server,
         }
     except Exception as exc:
