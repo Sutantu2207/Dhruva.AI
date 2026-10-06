@@ -57,9 +57,9 @@ ENV APPLICATION_ENV=production \
     PYTHONDONTWRITEBYTECODE=1 \
     PORT=8000
 
-# Health check probe against canonical live endpoint
+# Health check probe against canonical live endpoint (dynamically probes $PORT)
 HEALTHCHECK --interval=20s --timeout=5s --start-period=15s --retries=3 \
-    CMD curl -f http://localhost:8000/health/live || exit 1
+    CMD curl -f http://127.0.0.1:${PORT:-8000}/health/live || exit 1
 
-# Default command: production ASGI server
-CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4", "--proxy-headers", "--forwarded-allow-ips", "*"]
+# Default command: production ASGI server binding dynamically to $PORT with signal propagation
+CMD ["sh", "-c", "exec python -m uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers ${WEB_CONCURRENCY:-2} --proxy-headers --forwarded-allow-ips '*'"]

@@ -40,10 +40,25 @@ class Settings(BaseSettings):
     COOKIE_SAMESITE: str = Field(default="lax")  # "lax" or "strict"
     COOKIE_DOMAIN: Union[str, None] = Field(default=None)
 
+    # Server Port (Bound dynamically by PaaS like Railway, Render, Cloud Run)
+    PORT: int = Field(default=8000)
+
     # Database (PostgreSQL with pgvector)
     DATABASE_URL: str = Field(
         default="postgresql+asyncpg://dhruva_admin:dhruva_secret_change_in_prod@localhost:5432/dhruva_db"
     )
+
+    @field_validator("DATABASE_URL", mode="before")
+    @classmethod
+    def assemble_database_url(cls, v: str) -> str:
+        """Adapts cloud-injected URLs (e.g., Railway/Heroku postgres://) to SQLAlchemy asyncpg."""
+        if isinstance(v, str):
+            if v.startswith("postgres://"):
+                return v.replace("postgres://", "postgresql+asyncpg://", 1)
+            elif v.startswith("postgresql://") and not v.startswith("postgresql+"):
+                return v.replace("postgresql://", "postgresql+asyncpg://", 1)
+        return v
+
     DATABASE_POOL_SIZE: int = Field(default=10)
     DATABASE_MAX_OVERFLOW: int = Field(default=20)
     DATABASE_POOL_TIMEOUT: int = Field(default=30)

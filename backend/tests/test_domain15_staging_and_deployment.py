@@ -141,3 +141,61 @@ async def test_api_health_live_and_ready_endpoints(async_client: AsyncClient):
     assert "email" in ready_data
     assert "ai_provider" in ready_data
     assert "sandbox" in ready_data
+
+
+def test_railway_deployment_configuration_files():
+    """Verify that railway.json and railway.toml exist and properly configure Dockerfile.backend."""
+    import json
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parent.parent.parent
+
+    # 1. railway.json validation
+    railway_json_path = repo_root / "railway.json"
+    assert railway_json_path.exists(), "railway.json must exist at repository root"
+    with open(railway_json_path, "r", encoding="utf-8") as f:
+        config = json.load(f)
+    assert config.get("build", {}).get("builder") == "DOCKERFILE"
+    assert config.get("build", {}).get("dockerfilePath") == "Dockerfile.backend"
+    assert config.get("deploy", {}).get("healthcheckPath") == "/health/live"
+
+    # 2. railway.toml validation
+    railway_toml_path = repo_root / "railway.toml"
+    assert railway_toml_path.exists(), "railway.toml must exist at repository root"
+    content = railway_toml_path.read_text(encoding="utf-8")
+    assert 'builder = "DOCKERFILE"' in content
+    assert 'dockerfilePath = "Dockerfile.backend"' in content
+
+
+def test_database_url_cloud_adapter():
+    """Verify that Settings adapts cloud-injected postgresql:// or postgres:// URLs to asyncpg."""
+    # Railway standard injected URL
+    railway_url = "postgresql://postgres:secret123@roundhouse.proxy.rlwy.net:12345/railway"
+    s1 = Settings(DATABASE_URL=railway_url)
+    assert s1.DATABASE_URL.startswith("postgresql+asyncpg://")
+
+    # Legacy Heroku-style URL
+    legacy_url = "postgres://user:pass@host:5432/dbname"
+    s2 = Settings(DATABASE_URL=legacy_url)
+    assert s2.DATABASE_URL.startswith("postgresql+asyncpg://")
+
+    # Native asyncpg URL left unchanged
+    asyncpg_url = "postgresql+asyncpg://user:pass@host:5432/dbname"
+    s3 = Settings(DATABASE_URL=asyncpg_url)
+    assert s3.DATABASE_URL == asyncpg_url
+
+
+def test_backend_dockerfile_railway_contract():
+    """Verify Dockerfile.backend binds to dynamic $PORT and executes via non-root user."""
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parent.parent.parent
+    dockerfile_path = repo_root / "Dockerfile.backend"
+    assert dockerfile_path.exists(), "Dockerfile.backend must exist at repository root"
+
+    content = dockerfile_path.read_text(encoding="utf-8")
+    # Must bind to 0.0.0.0 and dynamic $PORT
+    assert "${PORT:-8000}" in content
+    assert "0.0.0.0" in content
+    assert "USER dhruva:dhruva" in content
+    assert "HEALTHCHECK" in content

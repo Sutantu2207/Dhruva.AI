@@ -1,0 +1,14 @@
+# ==============================================================================
+# DHRUVA.AI — Railway Deployment Configuration
+# Explicitly instructs Railway to build FastAPI backend using Dockerfile.backend
+# ==============================================================================
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile.backend"
+
+[deploy]
+healthcheckPath = "/health/live"
+healthcheckTimeout = 120
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10

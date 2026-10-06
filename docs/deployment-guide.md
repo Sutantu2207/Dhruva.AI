@@ -239,3 +239,21 @@ docker compose -f docker-compose.production.yml up -d --build
 
 ### Full System Disaster Recovery:
 See [`docs/disaster-recovery.md`](file:///c:/Users/sutan/OneDrive/Desktop/Dhruva.AI/docs/disaster-recovery.md) for full point-in-time database restoration and state reconstruction.
+
+---
+
+## 9. Cloud Platform Deployment: Railway (Backend) & Vercel (Frontend)
+
+For cloud PaaS deployment decoupling the backend and frontend:
+
+### Railway Backend Deployment:
+- **Configuration as Code**: Governed by `railway.json` and `railway.toml` at the repository root.
+- **Builder**: Explicitly declared as `builder = "DOCKERFILE"` with `dockerfilePath = "Dockerfile.backend"`.
+- **Runtime Port**: Binds dynamically to Railway's `$PORT` environment variable (`0.0.0.0:${PORT:-8000}`).
+- **Database**: Automatically adapts Railway's `DATABASE_URL` (`postgresql://` $\rightarrow$ `postgresql+asyncpg://`).
+- **Comprehensive Guide**: See [`docs/railway-deployment.md`](file:///c:/Users/sutan/OneDrive/Desktop/Dhruva.AI/docs/railway-deployment.md).
+
+### Vercel Frontend Deployment:
+- **Root Directory**: `frontend`
+- **Framework Preset**: Next.js
+- **Environment Variables**: `NEXT_PUBLIC_API_URL=https://<your-railway-backend>.up.railway.app/api/v1`
