@@ -171,9 +171,17 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 
 
+def get_target_url() -> str:
+    """Retrieve target database URL from Alembic config if overridden, otherwise from app settings."""
+    cfg_url = config.get_main_option("sqlalchemy.url")
+    if not cfg_url or cfg_url.startswith("driver://"):
+        return settings.DATABASE_URL
+    return cfg_url
+
+
 def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode."""
-    url = settings.DATABASE_URL
+    url = get_target_url()
     context.configure(
         url=url,
         target_metadata=target_metadata,
@@ -186,36 +194,49 @@ def run_migrations_offline() -> None:
 
 
 def do_run_migrations(connection):
-    # Ensure alembic_version.version_num is widened if alembic_version was already
-    # created on PostgreSQL with Alembic's legacy 32-character limit.
-    if connection.dialect.name == "postgresql":
-        try:
-            connection.execute(
-                text(
-                    "DO $$ BEGIN "
-                    "IF EXISTS (SELECT 1 FROM information_schema.columns "
-                    "           WHERE table_name = 'alembic_version' "
-                    "           AND column_name = 'version_num' "
-                    "           AND character_maximum_length < 255) THEN "
-                    "    ALTER TABLE alembic_version ALTER COLUMN version_num TYPE VARCHAR(255); "
-                    "END IF; "
-                    "END $$;"
-                )
-            )
-        except Exception:
-            pass  # Non-fatal if table does not exist or user lacks ALTER permissions
-
+    # Configure context first on clean connection so Alembic detects
+    # that it is NOT in an external transaction (_in_external_transaction = False)
+    # and properly commits the transaction on exit of context.begin_transaction().
     context.configure(connection=connection, target_metadata=target_metadata)
+
     with context.begin_transaction():
+        # Ensure alembic_version.version_num is widened if alembic_version was already
+        # created on PostgreSQL with Alembic's legacy 32-character limit.
+        # This MUST be executed inside context.begin_transaction() so it does not trigger
+        # SQLAlchemy 2.0 autobegin before context.configure() initializes.
+        if connection.dialect.name == "postgresql":
+            try:
+                connection.execute(
+                    text(
+                        "DO $$ BEGIN "
+                        "IF EXISTS (SELECT 1 FROM information_schema.columns "
+                        "           WHERE table_name = 'alembic_version' "
+                        "           AND column_name = 'version_num' "
+                        "           AND character_maximum_length < 255) THEN "
+                        "    ALTER TABLE alembic_version ALTER COLUMN version_num TYPE VARCHAR(255); "
+                        "END IF; "
+                        "END $$;"
+                    )
+                )
+            except Exception:
+                pass  # Non-fatal if table does not exist or user lacks ALTER permissions
+
         context.run_migrations()
+
+    # Defense in depth: guarantee any outstanding transaction is committed
+    if connection.in_transaction():
+        connection.commit()
 
 
 async def run_async_migrations() -> None:
     """Run migrations in 'online' mode with async SQLAlchemy engine."""
-    connectable = create_async_engine(settings.DATABASE_URL)
+    target_url = get_target_url()
+    connectable = create_async_engine(target_url)
 
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)
+        if connection.in_transaction():
+            await connection.commit()
 
     await connectable.dispose()
 
@@ -226,6 +247,6 @@ def run_migrations_online() -> None:
 
 if context.is_offline_mode():
     run_migrations_offline()
-else:
+elif not context.config.attributes.get("skip_run_online", False):
     run_migrations_online()
 

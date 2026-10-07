@@ -99,9 +99,62 @@ In your Railway service settings (**Variables** tab), configure:
 
 ---
 
-## 5. Post-Deployment Verification
+---
 
-Once deployed on Railway, test the public URL:
+## 5. Database Migration Execution & Transaction Persistence Lifecycle
+
+### 5.1 SQLAlchemy 2.0 Async Migration Invariants
+In SQLAlchemy 2.0 with asyncpg, DDL on PostgreSQL is transactional. Alembic manages transaction demarcation via `context.begin_transaction()`.
+- **Clean Connection Before Configure**: `context.configure(connection=connection, target_metadata=target_metadata)` **must** be called before any statements execute on `connection`. Executing queries prior to `context.configure()` triggers SQLAlchemy autobegin, causing Alembic to detect `_in_external_transaction = True` and render `context.begin_transaction()` a no-op (`nullcontext`). This results in uncommitted migrations that get rolled back upon connection close.
+- **Transactional DDL Execution**: All DDL and version maintenance statements execute inside `with context.begin_transaction():` and commit on exit.
+- **Defense in Depth**: Explicit commit safeguards (`if connection.in_transaction(): connection.commit()`) prevent uncommitted transaction leaks.
+
+### 5.2 Executing Migrations on Railway
+Execute migrations against Railway PostgreSQL using either Railway CLI or the Railway Web Console:
+
+```bash
+# Option A: Via Railway CLI
+railway run alembic upgrade head
+
+# Option B: Inside Railway Web Shell / Deployment Console
+alembic upgrade head
+```
+
+### 5.3 Verification of Persisted State
+Immediately after running `alembic upgrade head`, verify migration persistence:
+
+```bash
+# 1. Verify Alembic reports head revision:
+alembic current -v
+# Output MUST show:
+# Current revision(s) for postgresql+asyncpg://...
+# 0013_create_production_operations_tables (head)
+
+# 2. Inspect Database Health Probe via CLI or HTTP:
+curl -fsS https://<your-service>.up.railway.app/health/ready
+```
+
+Expected readiness output:
+```json
+{
+  "status": "healthy",
+  "database": {
+    "status": "healthy",
+    "database": "postgresql",
+    "connected": true,
+    "has_institutions": true,
+    "has_user_sessions": true,
+    "alembic_version": "0013_create_production_operations_tables",
+    "public_tables_count": 137
+  }
+}
+```
+
+---
+
+## 6. Post-Deployment Verification
+
+Once deployed on Railway, test the public URLs:
 ```bash
 # 1. Verify Process Liveness
 curl -fsS https://<your-service>.up.railway.app/health/live
@@ -109,5 +162,5 @@ curl -fsS https://<your-service>.up.railway.app/health/live
 
 # 2. Verify Readiness & Database Connectivity
 curl -fsS https://<your-service>.up.railway.app/health/ready
-# Expected: {"status": "healthy" (or "degraded"), ... "database": {"connected": true}}
+# Expected: {"status": "healthy", ... "has_institutions": true, "has_user_sessions": true}
 ```
